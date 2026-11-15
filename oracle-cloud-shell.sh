@@ -8,8 +8,9 @@ export OCI_CLI_REGION="${OCI_CLI_REGION:-eu-frankfurt-1}"
 KEY='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOo3x242oBjGxrA7dHQOxpl1lXDFlPrePBa2kVdfCjLS presence-oracle-deploy'
 echo "$KEY" > /tmp/presence.pub
 
-TENANCY="${OCI_CLI_TENANCY:-$(awk -F= '/^[[:space:]]*tenancy[[:space:]]*=/{gsub(/[[:space:]]/,"",$2);print $2;exit}' "$HOME/.oci/config")}"
-[ -n "$TENANCY" ] || { echo "Не нашёл tenancy OCID"; exit 1; }
+CONFIG="${OCI_CLI_CONFIG_FILE:-${OCI_CONFIG_FILE:-$HOME/.oci/config}}"
+TENANCY="${OCI_CLI_TENANCY:-$(awk -F= '/^[[:space:]]*tenancy[[:space:]]*=/{gsub(/[[:space:]]/,"",$2);print $2;exit}' "$CONFIG" 2>/dev/null || true)}"
+[ -n "$TENANCY" ] || { echo "Не нашёл tenancy OCID в $CONFIG"; exit 1; }
 echo "Tenancy: $TENANCY"
 
 echo "Создаю VCN..."
