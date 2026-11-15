@@ -63,7 +63,8 @@
 #nk-answer.nk-card{top:50%;bottom:auto;left:50%;right:auto;transform:translate(-50%,-50%);width:min(360px,92vw)}
 #nk-answer.nk-toast{bottom:calc(66px + env(safe-area-inset-bottom))}#nk-answer.nk-glass{bottom:0;border-radius:20px 20px 0 0;padding-bottom:calc(16px + env(safe-area-inset-bottom))}
 #nk-answer b{font-size:10px;letter-spacing:.12em;color:#8b8b95;text-transform:uppercase}.nk-a{font-size:22px;font-weight:800;color:#d3fb3e;margin:6px 0;line-height:1.2}.nk-e{font-size:13px;color:#b9b9c2;line-height:1.45}.nk-x{display:flex;gap:8px;margin-top:12px}.nk-x button{flex:1;padding:9px;border-radius:9px;border:1px solid #2c2c35;background:#18181d;color:#fff;font:600 12px Inter,system-ui}`;
-  document.documentElement.appendChild(style);
+  const styleRoot = document.head || document.documentElement;
+  if (styleRoot) styleRoot.appendChild(style); else addEventListener('DOMContentLoaded', () => document.head?.appendChild(style), { once: true });
 
   let sheet = null;
   let answer = null;
