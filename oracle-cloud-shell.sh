@@ -9,8 +9,17 @@ KEY='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOo3x242oBjGxrA7dHQOxpl1lXDFlPrePBa2kVd
 echo "$KEY" > /tmp/presence.pub
 
 CONFIG="${OCI_CLI_CONFIG_FILE:-${OCI_CONFIG_FILE:-$HOME/.oci/config}}"
-TENANCY="${OCI_CLI_TENANCY:-$(awk -F= '/^[[:space:]]*tenancy[[:space:]]*=/{gsub(/[[:space:]]/,"",$2);print $2;exit}' "$CONFIG" 2>/dev/null || true)}"
-[ -n "$TENANCY" ] || { echo "Не нашёл tenancy OCID в $CONFIG"; exit 1; }
+read_tenancy() {
+  awk -F= '/^[[:space:]]*tenancy[[:space:]]*=/{gsub(/[[:space:]]/,"",$2);print $2;exit}' "$1" 2>/dev/null || true
+}
+TENANCY="${TENANCY:-${OCI_CLI_TENANCY:-}}"
+if [ -z "$TENANCY" ] && [ -e "$CONFIG" ]; then
+  TENANCY="$(read_tenancy "$CONFIG")"
+  if [ -z "$TENANCY" ]; then
+    TENANCY="$(sudo -n awk -F= '/^[[:space:]]*tenancy[[:space:]]*=/{gsub(/[[:space:]]/,"",$2);print $2;exit}' "$CONFIG" 2>/dev/null || true)"
+  fi
+fi
+[ -n "$TENANCY" ] || { echo "Не смог прочитать tenancy из $CONFIG. Пришли вывод: ls -l $CONFIG"; exit 1; }
 echo "Tenancy: $TENANCY"
 
 echo "Создаю VCN..."
