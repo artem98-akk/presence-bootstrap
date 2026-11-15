@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NAUROK AI
 // @namespace    naurok-thin
-// @version      3.0.0
+// @version      3.2.0
 // @match        *://naurok.com.ua/*
 // @match        *://naurok.ua/*
 // @grant        GM_getValue
