@@ -18,7 +18,7 @@
   window.__NAUROK_AI_V3__ = true;
   document.querySelectorAll('#nk,#pai-trigger,#pai-settings-zone,#pai-sheet').forEach((n) => n.remove());
   const SERVER = 'https://79-76-123-117.sslip.io';
-  const BUY = 'https://t.me/bypassadminxz';
+  const SUPPORT_FALLBACK = 'https://t.me/bypassadminxz';
   const GM = globalThis.GM?.xmlHttpRequest ?? globalThis.GM_xmlhttpRequest;
   const DEFAULTS = { apiKey: '', model: 'gemini-3.5-flash-lite', style: 'glass', speed: 'fast', left: 12, bottom: 12 };
   const get = (k, d) => { try { return typeof GM_getValue === 'function' ? GM_getValue('nk_' + k, d) : JSON.parse(localStorage.getItem('nk_' + k) ?? 'null') ?? d; } catch { return d; } };
@@ -92,10 +92,10 @@
       sheet = el('div'); sheet.id = 'nk-sheet'; sheet.hidden = true;
       document.body.appendChild(sheet);
     }
-    const models = (cfg.models || []).map((m) => `<option value="${esc(m.id)}"${m.id === settings.model ? ' selected' : ''}>${esc(m.label || m.id)}</option>`).join('');
+    const models = (cfg?.models || []).map((m) => `<option value="${esc(m.id)}"${m.id === settings.model ? ' selected' : ''}>${esc(m.label || m.id)}</option>`).join('');
     sheet.innerHTML = `<div class="nk-scroll">
       <h2 class="nk-h">NAUROK AI</h2><p class="nk-sub">${accessText()}${message ? `<br><span style="color:#ff6b6b">${esc(message)}</span>` : ''}</p>
-      <div class="nk-sec"><label class="nk-l">2. Ключ доступа</label><input id="nk-license" class="nk-in" placeholder="NK-…" autocomplete="off"><button class="nk-b" id="nk-act">Активировать ключ</button><button class="nk-b alt" id="nk-trial">Попробовать 24 часа</button><a class="nk-b alt" href="${BUY}" target="_blank" rel="noopener">Купить доступ</a></div>
+      <div class="nk-sec"><label class="nk-l">2. Ключ доступа</label><input id="nk-license" class="nk-in" placeholder="NK-…" autocomplete="off"><button class="nk-b" id="nk-act">Активировать ключ</button><button class="nk-b alt" id="nk-trial">Попробовать 24 часа</button><a class="nk-b alt" href="${cfg?.supportUrl || SUPPORT_FALLBACK}" target="_blank" rel="noopener">Купить доступ</a></div>
       <div class="nk-sec"><label class="nk-l">1. Свой Gemini API-ключ</label><input id="nk-apikey" class="nk-in" type="password" value="${esc(settings.apiKey)}" placeholder="AIza… или AQ.…" autocomplete="off"><p class="nk-status" style="margin-top:7px">Ключ хранится в браузере и уходит только в Google. Получить: <a href="https://aistudio.google.com/app/apikey" target="_blank" style="color:#d3fb3e">aistudio.google.com</a></p></div>
       <div class="nk-sec"><label class="nk-l">Модель</label><select id="nk-model" class="nk-in">${models || '<option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite</option>'}</select><label class="nk-l" style="margin-top:12px">Скорость</label><div class="nk-row"><button class="nk-pill" data-speed="fast">⚡ Быстро</button><button class="nk-pill" data-speed="accurate">🎯 Точно</button></div></div>
       <div class="nk-sec"><label class="nk-l">Стиль ответа</label><div class="nk-row" style="flex-wrap:wrap"><button class="nk-pill" data-style="glass">Glass</button><button class="nk-pill" data-style="card">Card</button><button class="nk-pill" data-style="toast">Toast</button><button class="nk-pill" data-style="alert">Alert</button></div><p class="nk-status" style="margin-top:8px">Настройки хранятся в браузере. Ключ Gemini на наш сервер не отправляется.</p></div>
@@ -147,9 +147,14 @@
     for (const [p, list] of groups) {
       const uniq = [...new Set(list)].slice(0, 8);
       if (uniq.length < 2) continue;
-      let q = (p.textContent || '').replace(/\s+/g, ' ').trim();
-      for (const t of uniq) q = q.split(t).join(' ');
-      q = q.replace(/\s+/g, ' ').trim().slice(0, 1500);
+      let q = '';
+      let node = p;
+      for (let depth = 0; depth < 5 && node; depth += 1, node = node.parentElement) {
+        q = (node.textContent || '').replace(/\s+/g, ' ').trim();
+        for (const t of uniq) q = q.split(t).join(' ');
+        q = q.replace(/\s+/g, ' ').trim().slice(0, 1500);
+        if (q.length >= 8) break;
+      }
       if (q.length < 8) continue;
       if (!best || uniq.length > best.options.length) best = { question: q, options: uniq };
     }
@@ -172,6 +177,27 @@
       onload: (r) => { try { const d = JSON.parse(r.responseText); const t = (d.candidates?.[0]?.content?.parts || []).map((p) => p.text).join('\n'); if (!t) throw new Error('Пустой ответ'); resolve(t); } catch (e) { reject(e); } }, onerror: () => reject(new Error('Gemini недоступен')), ontimeout: () => reject(new Error('Таймаут Gemini')) }));
     const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(settings.model)}:generateContent`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': key }, body: JSON.stringify({ contents: [{ parts: [{ text: promptFor(question, options) }] }] }) });
     const d = await r.json(); if (!r.ok) throw new Error('Ключ Gemini неверный'); return (d.candidates?.[0]?.content?.parts || []).map((p) => p.text).join('\n');
+  }
+
+  function parseAnswer(text) {
+    const raw = String(text || '').trim(); const a = raw.indexOf('{'); const b = raw.lastIndexOf('}');
+    if (a !== -1 && b > a) {
+      try {
+        const d = JSON.parse(raw.slice(a, b + 1));
+        const af = cfg.answerRules?.answerField || 'answer';
+        const arr = (Array.isArray(d[af]) ? d[af] : [d[af]]).map(String).filter(Boolean);
+        if (arr.length) return { answer: arr, explanation: String(d[cfg.answerRules?.explanationField || 'explanation'] || ''), type: d[cfg.answerRules?.typeField || 'type'] || 'single' };
+      } catch {}
+    }
+    return { answer: [raw.slice(0, 120)], explanation: '', type: 'open' };
+  }
+  function mapAnswer(arr, options) {
+    return arr.map((v) => {
+      const m = /^[A-H]$/i.exec(v);
+      if (!m) return v;
+      const i = m[0].toUpperCase().charCodeAt(0) - 65;
+      return options[i] ? `${m[0].toUpperCase()}) ${options[i]}` : m[0].toUpperCase();
+    });
   }
 
   async function ask() {
@@ -199,25 +225,7 @@
     applyPos(); refreshAccess();
   }
   if (document.body) mount(); else addEventListener('DOMContentLoaded', mount, { once: true });
-})();  function parseAnswer(text) {
-    const raw = String(text || '').trim(); const a = raw.indexOf('{'); const b = raw.lastIndexOf('}');
-    if (a !== -1 && b > a) {
-      try {
-        const d = JSON.parse(raw.slice(a, b + 1));
-        const af = cfg.answerRules?.answerField || 'answer';
-        const arr = (Array.isArray(d[af]) ? d[af] : [d[af]]).map(String).filter(Boolean);
-        if (arr.length) return { answer: arr, explanation: String(d[cfg.answerRules?.explanationField || 'explanation'] || ''), type: d[cfg.answerRules?.typeField || 'type'] || 'single' };
-      } catch {}
-    }
-    return { answer: [raw.slice(0, 120)], explanation: '', type: 'open' };
+  if (window.__NAUROK_AI_TEST__) {
+    window.__NAUROK_AI__ = { parseAnswer, mapAnswer, extract, setCfg: (value) => { cfg = value; }, getCfg: () => cfg };
   }
-  function mapAnswer(arr, options) {
-    return arr.map((v) => {
-      const m = /^[A-H]$/i.exec(v);
-      if (!m) return v;
-      const i = m[0].toUpperCase().charCodeAt(0) - 65;
-      return options[i] ? `${m[0].toUpperCase()}) ${options[i]}` : m[0].toUpperCase();
-    });
-  }
-
-
+})();
