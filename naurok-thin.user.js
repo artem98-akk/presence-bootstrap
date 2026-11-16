@@ -1,231 +1,1205 @@
 // ==UserScript==
-// @name         NAUROK AI
-// @namespace    naurok-thin
-// @version      3.2.1
+// @name         Naurok AI — Safari
+// @namespace    presence
+// @version      3.3.0
+// @description  Присутствие + AI-ответы по тапу: невидимые зоны, настройки, четыре стиля
 // @match        *://naurok.com.ua/*
 // @match        *://naurok.ua/*
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM.xmlHttpRequest
 // @grant        GM_xmlhttpRequest
-// @connect      79-76-123-117.sslip.io
 // @connect      generativelanguage.googleapis.com
+// @connect      192.168.0.101
 // @run-at       document-start
 // ==/UserScript==
+
 (() => {
   'use strict';
-  if (window.__NAUROK_AI_V3__) return;
-  window.__NAUROK_AI_V3__ = true;
-  document.querySelectorAll('#nk,#pai-trigger,#pai-settings-zone,#pai-sheet').forEach((n) => n.remove());
-  const SERVER = 'https://79-76-123-117.sslip.io';
-  const SUPPORT_FALLBACK = 'https://t.me/bypassadminxz';
-  const GM = globalThis.GM?.xmlHttpRequest ?? globalThis.GM_xmlhttpRequest;
-  const DEFAULTS = { apiKey: '', model: 'gemini-3.5-flash-lite', style: 'glass', speed: 'fast', left: 12, bottom: 12 };
-  const get = (k, d) => { try { return typeof GM_getValue === 'function' ? GM_getValue('nk_' + k, d) : JSON.parse(localStorage.getItem('nk_' + k) ?? 'null') ?? d; } catch { return d; } };
-  const set = (k, v) => { try { if (typeof GM_setValue === 'function') GM_setValue('nk_' + k, v); else localStorage.setItem('nk_' + k, JSON.stringify(v)); } catch {} };
-  const settings = Object.fromEntries(Object.keys(DEFAULTS).map((k) => [k, get(k, DEFAULTS[k])]));
-  let device = get('device', '');
-  let access = null;
-  let cfg = null;
-  let cfgExpiresAt = 0;
-  const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; };
-  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  if (window.__PAI_AI_LOADED__) return;
+  window.__PAI_AI_LOADED__ = true;
+  document.querySelectorAll('#nk,#nk-sheet,#nk-answer').forEach((n) => n.remove());
 
-  function api(path, body, method = 'POST', extra = {}) {
-    const headers = { 'content-type': 'application/json', ...(device ? { 'x-device': device } : {}), ...extra };
-    const url = SERVER + path;
-    if (GM) return new Promise((resolve, reject) => GM({ method, url, headers, data: body === undefined ? undefined : JSON.stringify(body), timeout: 30000,
-      onload: (r) => { let d = {}; try { d = JSON.parse(r.responseText || '{}'); } catch {} if (r.status >= 200 && r.status < 300) resolve(d); else reject(Object.assign(new Error(d.message || 'Ошибка'), { status: r.status, code: d.code || 'error' })); },
-      onerror: () => reject(Object.assign(new Error('Сервер недоступен'), { code: 'network' })), ontimeout: () => reject(Object.assign(new Error('Таймаут'), { code: 'network' })) }));
-    return fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) }).then(async (r) => { const d = await r.json().catch(() => ({})); if (!r.ok) throw Object.assign(new Error(d.message || 'Ошибка'), { status: r.status, code: d.code || 'error' }); return d; });
-  }
+  const win = window;
+  const doc = document;
 
-  async function ensureDevice() {
-    if (device) return;
-    const fp = [navigator.userAgent, screen.width, screen.height, devicePixelRatio, Intl.DateTimeFormat().resolvedOptions().timeZone, navigator.language].join('|').slice(0, 180);
-    const d = await api('/api/device/register', { fingerprint: fp, ua: navigator.userAgent.slice(0, 250) });
-    device = d.deviceSecret; set('device', device);
-  }
-  async function refreshAccess() {
+  /* ------------------------------------------------------------------ */
+  /* Константы и настройки по умолчанию                                  */
+  /* ------------------------------------------------------------------ */
+
+  const SERVER = 'http://192.168.0.101:8787';
+  const TOKEN = 'dev-token';
+  const HEARTBEAT_MS = 15000;
+
+  const PREFIX = 'pai_';
+  const Z_TRIGGER = 2147483000;
+  const Z_ANSWER = 2147482900;
+  const Z_SHEET = 2147483100;
+
+  const LONG_PRESS_MS = 500;
+  const TOAST_MS = 4000;
+  const REATTACH_MS = 300;
+  const MIN_KEY_LENGTH = 20;
+
+  const MODELS = ['gemini-3.5-flash-lite', 'gemini-3.5-flash'];
+
+  const SPEEDS = {
+    fast: { temperature: 0.1, maxOutputTokens: 800 },
+    accurate: { temperature: 0.3, maxOutputTokens: 2000 }
+  };
+
+  const SPEED_CARDS = [
+    { id: 'fast', emoji: '⚡', title: 'Швидкий', sub: '~1-2 сек' },
+    { id: 'accurate', emoji: '🎯', title: 'Точний', sub: '~3-5 сек' }
+  ];
+
+  const STYLE_CARDS = [
+    { id: 'glass', emoji: '🪟', title: 'Glass', sub: 'знизу екрану' },
+    { id: 'card', emoji: '🌑', title: 'Dark card', sub: 'по центру' },
+    { id: 'toast', emoji: '🍞', title: 'Toast', sub: 'автозникає 4с' },
+    { id: 'alert', emoji: '🔔', title: 'Alert', sub: 'системний' }
+  ];
+
+  const STEALTH_MODES = ['off', 'soft', 'hard'];
+
+  const DEFAULTS = {
+    key: '',
+    model: MODELS[0],
+    speed: 'fast',
+    style: 'glass',
+    stealth: 'soft',
+    posLeft: 12,
+    posBottom: 12
+  };
+
+  /* ------------------------------------------------------------------ */
+  /* Хранилище: GM_* или localStorage с префиксом pai_                   */
+  /* ------------------------------------------------------------------ */
+
+  function storageGet(name, fallback) {
     try {
-      await ensureDevice();
-      access = await api('/api/me/access', undefined, 'GET');
-      if (access.state === 'trial' || access.state === 'paid') {
-        cfg = await api('/api/client/config', undefined, 'GET');
-        cfgExpiresAt = Number(cfg.expiresAt) || 0;
-      } else { cfg = null; cfgExpiresAt = 0; }
-    } catch { access = null; cfg = null; cfgExpiresAt = 0; }
+      if (typeof GM_getValue === 'function') return GM_getValue(name, fallback);
+    } catch {
+      /* ignore */
+    }
+    try {
+      const raw = win.localStorage.getItem(PREFIX + name);
+      return raw === null ? fallback : JSON.parse(raw);
+    } catch {
+      return fallback;
+    }
   }
 
-  const style = document.createElement('style');
-  style.textContent = `#nk-left,#nk-right{position:fixed;width:44px;height:44px;border:0;background:transparent;opacity:0;z-index:2147483000;touch-action:manipulation;padding:0;margin:0}
-#nk-left{left:12px;bottom:calc(12px + env(safe-area-inset-bottom))}#nk-right{top:calc(12px + env(safe-area-inset-top));right:12px}
-#nk-sheet{position:fixed;inset:0;z-index:2147483100;background:#08080a;color:#f5f5f7;display:flex;flex-direction:column;font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-#nk-sheet[hidden]{display:none}.nk-scroll{flex:1;overflow:auto;padding:22px 18px 10px;max-width:560px;width:100%;margin:0 auto;box-sizing:border-box}
-.nk-h{font-size:26px;font-weight:800;letter-spacing:-.04em;margin:0 0 6px}.nk-sub{color:#8b8b95;font-size:13px;line-height:1.5;margin:0 0 20px}
-.nk-sec{background:#101013;border:1px solid #24242b;border-radius:18px;padding:16px;margin-bottom:12px}.nk-l{display:block;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#8b8b95;margin:0 0 7px}
-.nk-in{width:100%;box-sizing:border-box;background:#18181d;border:1px solid #2c2c35;border-radius:10px;color:#fff;padding:11px;font:600 14px Inter,system-ui;outline:none}.nk-in.bad{border-color:#ff5a5a}
-.nk-b{display:block;width:100%;box-sizing:border-box;border:0;border-radius:11px;padding:12px;margin-top:8px;font:700 14px Inter,system-ui;cursor:pointer;text-align:center;text-decoration:none;background:#d3fb3e;color:#08080a}.nk-b.alt{background:#1d1d24;color:#fff}.nk-b:disabled{opacity:.45}
-.nk-row{display:flex;gap:8px}.nk-row>*{flex:1}.nk-pill{border:1px solid #2c2c35;background:#18181d;color:#8b8b95;border-radius:9px;padding:9px;font:600 12px Inter,system-ui;cursor:pointer}.nk-pill.on{border-color:#d3fb3e;color:#d3fb3e;background:#151a0e}
-.nk-status{color:#b9b9c2;font-size:12px;line-height:1.6;margin:0}.nk-status b{color:#d3fb3e}.nk-actions{display:flex;gap:8px;padding:12px 18px calc(12px + env(safe-area-inset-bottom));max-width:560px;width:100%;margin:0 auto;box-sizing:border-box}
-.nk-actions button{flex:1;padding:13px;border-radius:11px;border:0;font:700 14px Inter,system-ui}.nk-cancel{background:#1d1d24;color:#fff}.nk-save{background:#d3fb3e;color:#08080a}
-#nk-answer.nk-alert{top:50%;left:50%;right:auto;bottom:auto;transform:translate(-50%,-50%);width:min(90vw,520px);background:#101013;border:1px solid #2a2a33;border-radius:22px;padding:24px;box-shadow:0 24px 80px #000b}
-.nk-alert .nk-a{font-size:26px;color:#fff;line-height:1.2;margin:0 0 12px;font-weight:700}.nk-alert .nk-e{font-size:18px;color:#f0f0f2;line-height:1.35;font-weight:600}.nk-alert .nk-x{margin-top:18px;justify-content:flex-end}.nk-alert .nk-x button{flex:0 0 auto;border:0;background:none;color:#4da3ff;font-size:18px;font-weight:600;padding:0}
-#nk-answer{position:fixed;left:10px;right:10px;bottom:calc(66px + env(safe-area-inset-bottom));z-index:2147483001;background:#101013f2;border:1px solid #2a2a33;border-radius:18px;padding:16px;color:#f5f5f7;font-family:Inter,system-ui;box-shadow:0 20px 60px #000a;box-sizing:border-box}
-#nk-answer.nk-card{top:50%;bottom:auto;left:50%;right:auto;transform:translate(-50%,-50%);width:min(360px,92vw)}
-#nk-answer.nk-toast{bottom:calc(66px + env(safe-area-inset-bottom))}#nk-answer.nk-glass{bottom:0;border-radius:20px 20px 0 0;padding-bottom:calc(16px + env(safe-area-inset-bottom))}
-#nk-answer b{font-size:10px;letter-spacing:.12em;color:#8b8b95;text-transform:uppercase}.nk-a{font-size:22px;font-weight:800;color:#d3fb3e;margin:6px 0;line-height:1.2}.nk-e{font-size:13px;color:#b9b9c2;line-height:1.45}.nk-x{display:flex;gap:8px;margin-top:12px}.nk-x button{flex:1;padding:9px;border-radius:9px;border:1px solid #2c2c35;background:#18181d;color:#fff;font:600 12px Inter,system-ui}`;
-  const styleRoot = document.head || document.documentElement;
-  if (styleRoot) styleRoot.appendChild(style); else addEventListener('DOMContentLoaded', () => document.head?.appendChild(style), { once: true });
+  function storageSet(name, value) {
+    try {
+      if (typeof GM_setValue === 'function') {
+        GM_setValue(name, value);
+        return;
+      }
+    } catch {
+      /* ignore */
+    }
+    try {
+      win.localStorage.setItem(PREFIX + name, JSON.stringify(value));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function sanitize(name, value) {
+    switch (name) {
+      case 'model':
+        return MODELS.includes(value) ? value : DEFAULTS.model;
+      case 'speed':
+        return value === 'accurate' || value === 'fast' ? value : DEFAULTS.speed;
+      case 'style':
+        return STYLE_CARDS.some((card) => card.id === value) ? value : DEFAULTS.style;
+      case 'stealth':
+        return STEALTH_MODES.includes(value) ? value : DEFAULTS.stealth;
+      case 'posLeft':
+      case 'posBottom': {
+        const n = Number(value);
+        return Number.isFinite(n) ? Math.max(0, Math.round(n)) : DEFAULTS[name];
+      }
+      case 'key':
+        return typeof value === 'string' ? value : '';
+      default:
+        return value;
+    }
+  }
+
+  function loadSettings() {
+    const loaded = {};
+    for (const name of Object.keys(DEFAULTS)) {
+      loaded[name] = sanitize(name, storageGet(name, DEFAULTS[name]));
+    }
+    return loaded;
+  }
+
+  let settings = loadSettings();
+
+  /* ------------------------------------------------------------------ */
+  /* Presence-трекинг (без видимой плашки)                               */
+  /* ------------------------------------------------------------------ */
+
+  const gmRequest = globalThis.GM?.xmlHttpRequest ?? globalThis.GM_xmlhttpRequest;
+  const newId = () =>
+    globalThis.crypto?.randomUUID
+      ? globalThis.crypto.randomUUID()
+      : `s-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  const sessionId = newId();
+  let away = false;
+  let awaySince = null;
+  let exits = 0;
+  let totalMs = 0;
+
+  function post(kind, detail) {
+    const payload = JSON.stringify({
+      events: [
+        {
+          sessionId,
+          ts: Date.now(),
+          kind,
+          source: 'userscript',
+          detail: detail === undefined ? null : detail
+        }
+      ]
+    });
+    const headers = { 'content-type': 'application/json', 'x-presence-token': TOKEN };
+
+    try {
+      if (gmRequest) {
+        gmRequest({ method: 'POST', url: `${SERVER}/api/events`, data: payload, headers });
+      } else {
+        fetch(`${SERVER}/api/events`, { method: 'POST', body: payload, headers }).catch(() => {});
+      }
+    } catch {
+      /* сеть недоступна — сервер обрежет интервал по таймауту */
+    }
+  }
+
+  function go(reason) {
+    if (away) return;
+    away = true;
+    awaySince = Date.now();
+    exits += 1;
+    post('away_start', { reason });
+  }
+
+  function back(reason) {
+    if (!away) return;
+    const ms = Math.max(0, Date.now() - awaySince);
+    away = false;
+    awaySince = null;
+    totalMs += ms;
+    post('away_end', { reason, ms });
+  }
+
+  doc.addEventListener('visibilitychange', () => {
+    if (doc.visibilityState === 'hidden') go('tab_hidden');
+    else back('tab_visible');
+  });
+
+  win.addEventListener('blur', () => {
+    const active = doc.activeElement;
+    if (active && active.tagName === 'IFRAME') return;
+    go('window_blur');
+  });
+
+  win.addEventListener('focus', () => back('window_focus'));
+  win.addEventListener('pagehide', () => back('pagehide'));
+  win.addEventListener('pageshow', () => {
+    if (doc.visibilityState === 'hidden') go('pageshow_hidden');
+    else back('pageshow_visible');
+  });
+
+  win.setInterval(() => post('heartbeat', { away }), HEARTBEAT_MS);
+
+  /* ------------------------------------------------------------------ */
+  /* Стили                                                               */
+  /* ------------------------------------------------------------------ */
+
+  const CSS = `
+#pai-trigger, #pai-settings-zone {
+  position: fixed; width: 44px; height: 44px; border-radius: 50%;
+  opacity: 0; pointer-events: auto; z-index: ${Z_TRIGGER};
+  touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+  background: transparent; border: 0; padding: 0; margin: 0;
+  outline: none; -webkit-user-select: none; user-select: none;
+}
+#pai-trigger { left: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); }
+#pai-settings-zone { top: calc(12px + env(safe-area-inset-top)); right: 12px; }
+#pai-trigger.pai-moving {
+  opacity: .6; border: 1px solid #fff;
+}
+#pai-sheet {
+  position: fixed; inset: 0; z-index: ${Z_SHEET};
+  display: flex; flex-direction: column;
+  background: #111; color: #fff; border-radius: 20px 20px 0 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+#pai-sheet[hidden] { display: none; }
+.pai-sheet-scroll {
+  flex: 1 1 auto; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: 20px 20px 8px;
+}
+.pai-sheet-title {
+  font-size: 22px; line-height: 1.2; font-weight: 700; color: #fff;
+  margin: 0 0 24px; text-align: left;
+}
+.pai-section { margin-bottom: 22px; }
+.pai-label {
+  display: block; font-size: 11px; line-height: 1.2; letter-spacing: 1px;
+  color: #8a8a8a; text-transform: uppercase; margin: 0 0 8px;
+}
+.pai-field-wrap { position: relative; }
+.pai-input, .pai-select {
+  display: block; width: 100%; height: 52px; box-sizing: border-box;
+  background: #1c1c1e; border: 1px solid transparent; border-radius: 12px;
+  color: #fff; font-size: 15px; padding: 0 46px 0 14px; outline: none;
+  -webkit-appearance: none; appearance: none;
+}
+.pai-select { padding-right: 36px; background-image: linear-gradient(45deg, transparent 50%, #8a8a8a 50%), linear-gradient(135deg, #8a8a8a 50%, transparent 50%); background-position: calc(100% - 20px) 24px, calc(100% - 14px) 24px; background-size: 6px 6px, 6px 6px; background-repeat: no-repeat; }
+.pai-input.pai-invalid { border-color: #ff453a; }
+.pai-eye {
+  position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+  width: 36px; height: 36px; border: 0; background: transparent; color: #8a8a8a;
+  font-size: 18px; line-height: 1; cursor: pointer; padding: 0;
+}
+.pai-error { color: #ff453a; font-size: 12px; margin-top: 6px; }
+.pai-hint { color: #8a8a8a; font-size: 12px; margin-top: 6px; line-height: 1.3; }
+.pai-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.pai-card {
+  height: 88px; box-sizing: border-box; background: #1c1c1e;
+  border: 2px solid transparent; border-radius: 14px; color: #fff;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 2px; padding: 6px; cursor: pointer; font-family: inherit;
+  -webkit-appearance: none; appearance: none;
+}
+.pai-card.pai-selected { border-color: #fff; }
+.pai-card .pai-emoji { font-size: 20px; line-height: 1.1; }
+.pai-card .pai-card-title { font-size: 15px; line-height: 1.2; color: #fff; }
+.pai-card .pai-card-sub { font-size: 12px; line-height: 1.2; color: #8a8a8a; }
+.pai-pills { display: flex; gap: 8px; }
+.pai-pill {
+  flex: 1 1 0; height: 40px; border-radius: 999px; background: #1c1c1e;
+  border: 1px solid #2c2c2e; color: #8a8a8a; font-size: 13px; cursor: pointer;
+  font-family: inherit; -webkit-appearance: none; appearance: none;
+}
+.pai-pill.pai-selected { background: #fff; color: #000; border-color: #fff; font-weight: 600; }
+.pai-actions {
+  position: sticky; bottom: 0; display: flex; gap: 12px; flex: 0 0 auto;
+  padding: 12px 20px calc(12px + env(safe-area-inset-bottom));
+  background: #111;
+}
+.pai-btn {
+  flex: 1 1 0; height: 52px; border-radius: 12px; border: 0;
+  font-size: 15px; font-family: inherit; cursor: pointer;
+  -webkit-appearance: none; appearance: none;
+}
+.pai-btn-close { background: #2c2c2e; color: #fff; }
+.pai-btn-save { background: #fff; color: #000; font-weight: 600; }
+
+.pai-answer {
+  position: fixed; z-index: ${Z_ANSWER}; box-sizing: border-box; color: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  pointer-events: none;
+}
+.pai-answer > * { pointer-events: auto; }
+.pai-style-glass {
+  left: 0; right: 0; bottom: 0;
+  padding: 18px 20px calc(18px + env(safe-area-inset-bottom));
+  background: rgba(20, 20, 22, .72); border-radius: 20px 20px 0 0;
+  -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
+}
+.pai-style-card {
+  left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: min(340px, 88vw); background: #1c1c1e; border-radius: 16px; padding: 18px;
+}
+.pai-style-toast {
+  left: 12px; right: 12px; bottom: calc(70px + env(safe-area-inset-bottom));
+  background: #1c1c1e; border-radius: 12px; padding: 14px 16px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, .5);
+}
+.pai-answer-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 10px; margin-bottom: 10px;
+}
+.pai-answer-title { font-size: 15px; font-weight: 700; }
+.pai-answer-provider { font-size: 11px; color: #8a8a8a; }
+.pai-answer-value { font-size: 20px; font-weight: 700; margin: 0 0 6px; }
+.pai-answer-reason { font-size: 13px; color: #b8b8b8; margin: 0; line-height: 1.4; }
+.pai-answer-text { font-size: 16px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+.pai-answer-actions { display: flex; gap: 10px; margin-top: 14px; }
+.pai-style-glass .pai-answer-actions { padding-left: 52px; }
+.pai-answer-btn {
+  flex: 1 1 0; height: 44px; border-radius: 10px; border: 0;
+  background: #2c2c2e; color: #fff; font-size: 14px; font-family: inherit; cursor: pointer;
+  -webkit-appearance: none; appearance: none;
+}
+.pai-answer-btn.pai-primary { background: #fff; color: #000; font-weight: 600; }
+.pai-skeleton { display: flex; flex-direction: column; gap: 10px; }
+.pai-skeleton i {
+  display: block; height: 12px; border-radius: 6px; background: #2c2c2e;
+  animation: pai-pulse 1.2s ease-in-out infinite;
+}
+.pai-skeleton i:nth-child(2) { width: 80%; }
+.pai-skeleton i:nth-child(3) { width: 60%; }
+@keyframes pai-pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
+.pai-error-text { color: #ff453a; font-size: 14px; line-height: 1.4; }
+.pai-manual {
+  width: 100%; min-height: 96px; box-sizing: border-box; resize: vertical;
+  background: #1c1c1e; color: #fff; border: 1px solid #2c2c2e; border-radius: 10px;
+  padding: 10px; font-size: 14px; font-family: inherit; outline: none;
+}
+`;
+
+  function injectStyles() {
+    if (doc.getElementById('pai-styles')) return;
+    const style = doc.createElement('style');
+    style.id = 'pai-styles';
+    style.textContent = CSS;
+    (doc.head || doc.documentElement).appendChild(style);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* DOM-помощники                                                       */
+  /* ------------------------------------------------------------------ */
+
+  function el(tag, className, text) {
+    const node = doc.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  function escapeHtml(value) {
+    return String(value === undefined || value === null ? '' : value)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  }
+
+  function isOurNode(node) {
+    return Boolean(
+      node &&
+        node.closest &&
+        node.closest('#pai-trigger, #pai-settings-zone, #pai-sheet, #pai-styles, .pai-answer')
+    );
+  }
+
+  function isTestPage() {
+    return /\/test(\/|$)/.test(win.location.pathname);
+  }
+
+  function hasKey() {
+    return String(settings.key || '').trim().length >= MIN_KEY_LENGTH;
+  }
+
+  function providerLabel() {
+    return `gemini · ${settings.model}`;
+  }
+
+  function clamp(value, min, max) {
+    return Math.min(Math.max(value, min), max);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Триггер и зона настроек                                             */
+  /* ------------------------------------------------------------------ */
+
+  let trigger = null;
+  let settingsZone = null;
+  let observer = null;
+  let lastReattach = 0;
+  let reattachTimer = null;
+
+  function applyPosition() {
+    if (!trigger) return;
+    trigger.style.left = `${settings.posLeft}px`;
+    trigger.style.bottom = `calc(${settings.posBottom}px + env(safe-area-inset-bottom))`;
+  }
+
+  function attachZones() {
+    const host = doc.body || doc.documentElement;
+    if (!host) return;
+    if (trigger && !trigger.isConnected) host.appendChild(trigger);
+    if (settingsZone && !settingsZone.isConnected) host.appendChild(settingsZone);
+    if (sheet && !sheet.hidden && !sheet.isConnected) host.appendChild(sheet);
+    if (answerEl && !answerEl.isConnected) host.appendChild(answerEl);
+    applyStealth();
+  }
+
+  function scheduleReattach() {
+    if (!doc.body) return;
+    const now = Date.now();
+    if (reattachTimer) return;
+    const wait = Math.max(0, REATTACH_MS - (now - lastReattach));
+    reattachTimer = win.setTimeout(() => {
+      reattachTimer = null;
+      lastReattach = Date.now();
+      attachZones();
+    }, wait);
+  }
+
+  function startObserver() {
+    if (observer || !doc.body || typeof win.MutationObserver !== 'function') return;
+    observer = new win.MutationObserver(() => scheduleReattach());
+    observer.observe(doc.body, { childList: true, subtree: true });
+  }
+
+  function mount() {
+    injectStyles();
+    if (!trigger) {
+      trigger = el('button', '');
+      trigger.id = 'pai-trigger';
+      trigger.type = 'button';
+      trigger.setAttribute('aria-label', 'Naurok AI');
+      trigger.addEventListener('pointerdown', onTriggerPointerDown);
+      trigger.addEventListener('contextmenu', (event) => event.preventDefault());
+    }
+    if (!settingsZone) {
+      settingsZone = el('button', '');
+      settingsZone.id = 'pai-settings-zone';
+      settingsZone.type = 'button';
+      settingsZone.setAttribute('aria-label', 'Налаштування Naurok AI');
+      settingsZone.addEventListener('pointerup', (event) => {
+        event.preventDefault();
+        openSheet();
+      });
+    }
+    attachZones();
+    applyPosition();
+    startObserver();
+  }
+
+  function onTriggerPointerDown(event) {
+    if (event.button !== undefined && event.button !== 0) return;
+    event.preventDefault();
+
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const baseLeft = settings.posLeft;
+    const baseBottom = settings.posBottom;
+    let longPressed = false;
+    let moved = false;
+    let longTimer = null;
+
+    longTimer = win.setTimeout(() => {
+      longPressed = true;
+      trigger.classList.add('pai-moving');
+    }, LONG_PRESS_MS);
+
+    const onMove = (moveEvent) => {
+      if (!longPressed) {
+        if (Math.abs(moveEvent.clientX - startX) > 10 || Math.abs(moveEvent.clientY - startY) > 10) {
+          win.clearTimeout(longTimer);
+        }
+        return;
+      }
+      moved = true;
+      const left = clamp(baseLeft + (moveEvent.clientX - startX), 0, win.innerWidth - 44);
+      const bottom = clamp(baseBottom - (moveEvent.clientY - startY), 0, win.innerHeight - 44);
+      settings.posLeft = Math.round(left);
+      settings.posBottom = Math.round(bottom);
+      applyPosition();
+    };
+
+    const finish = () => {
+      win.clearTimeout(longTimer);
+      doc.removeEventListener('pointermove', onMove);
+      doc.removeEventListener('pointerup', finish);
+      doc.removeEventListener('pointercancel', finish);
+      trigger.classList.remove('pai-moving');
+
+      if (longPressed) {
+        storageSet('posLeft', settings.posLeft);
+        storageSet('posBottom', settings.posBottom);
+        return;
+      }
+      if (!moved) handleTriggerTap();
+    };
+
+    doc.addEventListener('pointermove', onMove, { passive: true });
+    doc.addEventListener('pointerup', finish);
+    doc.addEventListener('pointercancel', finish);
+  }
+
+  function handleTriggerTap() {
+    if (isTestPage() && hasKey()) askCurrent();
+    else openSheet();
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Лист настроек                                                       */
+  /* ------------------------------------------------------------------ */
 
   let sheet = null;
-  let answer = null;
-  function accessText() {
-    if (!access) return 'Проверяю доступ…';
-    if (access.state === 'paid') return `Доступ: <b>оплачен</b>${access.expiresAt ? ` · осталось ${Math.ceil((access.expiresAt - Date.now()) / 86400000)} дн.` : ''}`;
-    if (access.state === 'trial') return `Пробный: <b>24 часа</b>${access.expiresAt ? ` · осталось ${Math.max(0, Math.ceil((access.expiresAt - Date.now()) / 3600000))} ч.` : ''}`;
-    if (access.state === 'expired') return 'Доступ <b>закончился</b>';
-    return 'Доступа нет';
-  }
-  function openSettings(message = '') {
-    if (!sheet) {
-      sheet = el('div'); sheet.id = 'nk-sheet'; sheet.hidden = true;
-      document.body.appendChild(sheet);
-    }
-    const models = (cfg?.models || []).map((m) => `<option value="${esc(m.id)}"${m.id === settings.model ? ' selected' : ''}>${esc(m.label || m.id)}</option>`).join('');
-    sheet.innerHTML = `<div class="nk-scroll">
-      <h2 class="nk-h">NAUROK AI</h2><p class="nk-sub">${accessText()}${message ? `<br><span style="color:#ff6b6b">${esc(message)}</span>` : ''}</p>
-      <div class="nk-sec"><label class="nk-l">2. Ключ доступа</label><input id="nk-license" class="nk-in" placeholder="NK-…" autocomplete="off"><button class="nk-b" id="nk-act">Активировать ключ</button><button class="nk-b alt" id="nk-trial">Попробовать 24 часа</button><a class="nk-b alt" href="${cfg?.supportUrl || SUPPORT_FALLBACK}" target="_blank" rel="noopener">Купить доступ</a></div>
-      <div class="nk-sec"><label class="nk-l">1. Свой Gemini API-ключ</label><input id="nk-apikey" class="nk-in" type="password" value="${esc(settings.apiKey)}" placeholder="AIza… или AQ.…" autocomplete="off"><p class="nk-status" style="margin-top:7px">Ключ хранится в браузере и уходит только в Google. Получить: <a href="https://aistudio.google.com/app/apikey" target="_blank" style="color:#d3fb3e">aistudio.google.com</a></p></div>
-      <div class="nk-sec"><label class="nk-l">Модель</label><select id="nk-model" class="nk-in">${models || '<option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite</option>'}</select><label class="nk-l" style="margin-top:12px">Скорость</label><div class="nk-row"><button class="nk-pill" data-speed="fast">⚡ Быстро</button><button class="nk-pill" data-speed="accurate">🎯 Точно</button></div></div>
-      <div class="nk-sec"><label class="nk-l">Стиль ответа</label><div class="nk-row" style="flex-wrap:wrap"><button class="nk-pill" data-style="glass">Glass</button><button class="nk-pill" data-style="card">Card</button><button class="nk-pill" data-style="toast">Toast</button><button class="nk-pill" data-style="alert">Alert</button></div><p class="nk-status" style="margin-top:8px">Настройки хранятся в браузере. Ключ Gemini на наш сервер не отправляется.</p></div>
-      </div><div class="nk-actions"><button class="nk-cancel" id="nk-close">Закрыть</button><button class="nk-save" id="nk-save">Сохранить</button></div>`;
-    sheet.hidden = false;
-    const keySec = sheet.querySelector('#nk-apikey')?.closest('.nk-sec');
-    const licSec = sheet.querySelector('#nk-license')?.closest('.nk-sec');
-    if (keySec && licSec && keySec.parentNode === licSec.parentNode) keySec.parentNode.insertBefore(keySec, licSec);
-    const mark = (type, value) => sheet.querySelectorAll(`[data-${type}]`).forEach((b) => b.classList.toggle('on', b.dataset[type] === value));
-    mark('speed', settings.speed); mark('style', settings.style);
-    sheet.querySelectorAll('[data-speed]').forEach((b) => b.onclick = () => { settings.speed = b.dataset.speed; mark('speed', settings.speed); });
-    sheet.querySelectorAll('[data-style]').forEach((b) => b.onclick = () => { settings.style = b.dataset.style; mark('style', settings.style); });
-    sheet.querySelector('#nk-close').onclick = () => { sheet.hidden = true; };
-    sheet.querySelector('#nk-save').onclick = () => { settings.apiKey = sheet.querySelector('#nk-apikey').value.trim(); settings.model = sheet.querySelector('#nk-model').value; for (const k of Object.keys(DEFAULTS)) set(k, settings[k]); sheet.hidden = true; };
-    sheet.querySelector('#nk-act').onclick = async (e) => { const key = sheet.querySelector('#nk-license').value.trim(); if (!key) return; e.target.disabled = true; try { await ensureDevice(); await api('/api/license/activate', { key }); await refreshAccess(); openSettings('Ключ активирован'); } catch (err) { openSettings(err.code === 'device_limit' ? 'Лимит устройств' : err.code === 'expired' ? 'Срок истёк' : 'Ключ недействителен'); } e.target.disabled = false; };
-    sheet.querySelector('#nk-trial').onclick = async (e) => { e.target.disabled = true; try { await ensureDevice(); await api('/api/trial/start', {}); await refreshAccess(); openSettings('Пробный доступ активирован'); } catch (err) { openSettings(err.code === 'trial_used' ? 'Пробный уже использован' : err.message); } e.target.disabled = false; };
+  let draft = null;
+  let keyInput = null;
+  let keyError = null;
+  let eyeButton = null;
+
+  function buildSheet() {
+    sheet = el('div', '');
+    sheet.id = 'pai-sheet';
+    sheet.hidden = true;
+    sheet.setAttribute('role', 'dialog');
+    sheet.setAttribute('aria-modal', 'true');
+    sheet.innerHTML = `
+      <div class="pai-sheet-scroll">
+        <div class="pai-sheet-title">⚡ Naurok AI</div>
+
+        <div class="pai-section">
+          <label class="pai-label" for="pai-key">API KEY</label>
+          <div class="pai-field-wrap">
+            <input id="pai-key" class="pai-input" type="password" placeholder="AIza…"
+              autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off">
+            <button type="button" class="pai-eye" id="pai-eye" aria-label="Показати ключ">👁</button>
+          </div>
+          <div class="pai-error" id="pai-key-error" hidden>Ключ має бути не коротшим за ${MIN_KEY_LENGTH} символів</div>
+        </div>
+
+        <div class="pai-section">
+          <label class="pai-label" for="pai-model">МОДЕЛЬ</label>
+          <select id="pai-model" class="pai-select">
+            ${MODELS.map((model) => `<option value="${model}">${model}</option>`).join('')}
+          </select>
+          <div class="pai-hint">gemini-3.5-flash-lite · gemini-1.5-flash · gemini-1.5-pro</div>
+        </div>
+
+        <div class="pai-section">
+          <div class="pai-label">РЕЖИМ ШВИДКОСТІ</div>
+          <div class="pai-cards" id="pai-speed">
+            ${SPEED_CARDS.map(
+              (card) => `<button type="button" class="pai-card" data-speed="${card.id}">
+                <span class="pai-emoji">${card.emoji}</span>
+                <span class="pai-card-title">${card.title}</span>
+                <span class="pai-card-sub">${card.sub}</span>
+              </button>`
+            ).join('')}
+          </div>
+        </div>
+
+        <div class="pai-section">
+          <div class="pai-label">СТИЛЬ ВІДПОВІДІ</div>
+          <div class="pai-cards" id="pai-style">
+            ${STYLE_CARDS.map(
+              (card) => `<button type="button" class="pai-card" data-style="${card.id}">
+                <span class="pai-emoji">${card.emoji}</span>
+                <span class="pai-card-title">${card.title}</span>
+                <span class="pai-card-sub">${card.sub}</span>
+              </button>`
+            ).join('')}
+          </div>
+        </div>
+
+        <div class="pai-section">
+          <div class="pai-label">РЕЖИМ</div>
+          <div class="pai-pills" id="pai-stealth">
+            ${STEALTH_MODES.map(
+              (mode) => `<button type="button" class="pai-pill" data-stealth="${mode}">${mode}</button>`
+            ).join('')}
+          </div>
+        </div>
+      </div>
+
+      <div class="pai-actions">
+        <button type="button" class="pai-btn pai-btn-close" id="pai-cancel">Закрити</button>
+        <button type="button" class="pai-btn pai-btn-save" id="pai-save">Зберегти</button>
+      </div>
+    `;
+
+    keyInput = sheet.querySelector('#pai-key');
+    keyError = sheet.querySelector('#pai-key-error');
+    eyeButton = sheet.querySelector('#pai-eye');
+
+    eyeButton.addEventListener('click', () => {
+      keyInput.type = keyInput.type === 'password' ? 'text' : 'password';
+    });
+
+    keyInput.addEventListener('input', () => {
+      keyInput.classList.remove('pai-invalid');
+      keyError.hidden = true;
+    });
+
+    sheet.querySelector('#pai-model').addEventListener('change', (event) => {
+      draft.model = event.target.value;
+    });
+
+    sheet.querySelectorAll('[data-speed]').forEach((button) => {
+      button.addEventListener('click', () => {
+        draft.speed = button.dataset.speed;
+        markSelected('#pai-speed [data-speed]', 'data-speed', draft.speed);
+      });
+    });
+
+    sheet.querySelectorAll('[data-style]').forEach((button) => {
+      button.addEventListener('click', () => {
+        draft.style = button.dataset.style;
+        markSelected('#pai-style [data-style]', 'data-style', draft.style);
+      });
+    });
+
+    sheet.querySelectorAll('[data-stealth]').forEach((button) => {
+      button.addEventListener('click', () => {
+        draft.stealth = button.dataset.stealth;
+        markSelected('[data-stealth]', 'data-stealth', draft.stealth);
+      });
+    });
+
+    sheet.querySelector('#pai-cancel').addEventListener('click', closeSheet);
+    sheet.querySelector('#pai-save').addEventListener('click', saveFromSheet);
   }
 
-  function closeAnswer() { document.querySelectorAll('#nk-answer').forEach((n) => n.remove()); answer = null; }
-  function renderAnswer({ styleName = settings.style, loading = false, text = '', explanation = '', error = '', retry = null }) {
-    closeAnswer();
-    if (styleName === 'alert' && !loading) {
-      answer = el('div'); answer.id = 'nk-answer'; answer.className = 'nk-alert';
-      answer.innerHTML = '<div class="nk-a">' + (error ? 'Ошибка' : 'Відповідь: ' + esc(text)) + '</div><div class="nk-e">' + esc(error ? error : explanation) + '</div><div class="nk-x"><button id="nk-close-a">Закрыть</button></div>';
-      document.body.appendChild(answer);
-      answer.querySelector('#nk-close-a').onclick = closeAnswer;
-      return;
-    }
-    answer = el('div'); answer.id = 'nk-answer'; answer.className = `nk-${styleName}`;
-    answer.innerHTML = loading ? '<b>NAUROK AI</b><div class="nk-a">Думаю…</div>' : `<b>NAUROK AI</b><div class="nk-a">${esc(error || text)}</div><div class="nk-e">${esc(explanation)}</div><div class="nk-x"><button id="nk-copy">Копировать</button><button id="nk-close-a">Закрыть</button></div>`;
-    document.body.appendChild(answer);
-    if (!loading) {
-      answer.querySelector('#nk-close-a').onclick = closeAnswer;
-      answer.querySelector('#nk-copy').onclick = () => navigator.clipboard?.writeText(text);
-    }
-    if (styleName === 'toast' && !loading) { const box = answer; setTimeout(() => { if (answer === box) closeAnswer(); }, 4000); }
-  }
-
-  function extract() {
-    const opts = [];
-    for (const n of document.querySelectorAll(cfg.selectors?.option || 'label, li, button')) {
-      if (n.closest('#nk-sheet,#nk-answer,#nk-left,#nk-right')) continue;
-      const t = (n.textContent || '').replace(/\s+/g, ' ').trim();
-      if (t && t.length <= 300) opts.push({ t, p: n.parentElement });
-    }
-    const groups = new Map();
-    for (const o of opts) { if (!groups.has(o.p)) groups.set(o.p, []); groups.get(o.p).push(o.t); }
-    let best = null;
-    for (const [p, list] of groups) {
-      const uniq = [...new Set(list)].slice(0, 8);
-      if (uniq.length < 2) continue;
-      let q = '';
-      let node = p;
-      for (let depth = 0; depth < 5 && node; depth += 1, node = node.parentElement) {
-        q = (node.textContent || '').replace(/\s+/g, ' ').trim();
-        for (const t of uniq) q = q.split(t).join(' ');
-        q = q.replace(/\s+/g, ' ').trim().slice(0, 1500);
-        if (q.length >= 8) break;
-      }
-      if (q.length < 8) continue;
-      if (!best || uniq.length > best.options.length) best = { question: q, options: uniq };
-    }
-    if (best) return best;
-    for (const n of document.querySelectorAll(cfg.selectors?.question || 'h1,h2,h3')) {
-      const q = (n.textContent || '').replace(/\s+/g, ' ').trim();
-      if (q.length >= 8) return { question: q.slice(0, 1500), options: [] };
-    }
-    return { question: '', options: [] };
-  }
-
-  function promptFor(question, options) {
-    const list = options.map((v, i) => `${String.fromCharCode(65 + i)}) ${v}`).join('\n');
-    return String(cfg.prompt).replaceAll('{{question}}', question).replaceAll('{{options}}', list ? 'Варианты:\n' + list : 'Вариантов нет.');
-  }
-
-  async function askOwn(question, options) {
-    const key = settings.apiKey;
-    if (GM) return new Promise((resolve, reject) => GM({ method: 'POST', url: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(settings.model)}:generateContent`, headers: { 'content-type': 'application/json', 'x-goog-api-key': key }, data: JSON.stringify({ contents: [{ parts: [{ text: promptFor(question, options) }] }], generationConfig: { temperature: 0.1, maxOutputTokens: settings.speed === 'accurate' ? 2500 : 1800, responseMimeType: 'application/json' } }), timeout: 30000,
-      onload: (r) => { try { const d = JSON.parse(r.responseText); const t = (d.candidates?.[0]?.content?.parts || []).map((p) => p.text).join('\n'); if (!t) throw new Error('Пустой ответ'); resolve(t); } catch (e) { reject(e); } }, onerror: () => reject(new Error('Gemini недоступен')), ontimeout: () => reject(new Error('Таймаут Gemini')) }));
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(settings.model)}:generateContent`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': key }, body: JSON.stringify({ contents: [{ parts: [{ text: promptFor(question, options) }] }] }) });
-    const d = await r.json(); if (!r.ok) throw new Error('Ключ Gemini неверный'); return (d.candidates?.[0]?.content?.parts || []).map((p) => p.text).join('\n');
-  }
-
-  function parseAnswer(text) {
-    const raw = String(text || '').trim(); const a = raw.indexOf('{'); const b = raw.lastIndexOf('}');
-    if (a !== -1 && b > a) {
-      try {
-        const d = JSON.parse(raw.slice(a, b + 1));
-        const af = cfg.answerRules?.answerField || 'answer';
-        const arr = (Array.isArray(d[af]) ? d[af] : [d[af]]).map(String).filter(Boolean);
-        if (arr.length) return { answer: arr, explanation: String(d[cfg.answerRules?.explanationField || 'explanation'] || ''), type: d[cfg.answerRules?.typeField || 'type'] || 'single' };
-      } catch {}
-    }
-    return { answer: [raw.slice(0, 120)], explanation: '', type: 'open' };
-  }
-  function mapAnswer(arr, options) {
-    return arr.map((v) => {
-      const m = /^[A-H]$/i.exec(v);
-      if (!m) return v;
-      const i = m[0].toUpperCase().charCodeAt(0) - 65;
-      return options[i] ? `${m[0].toUpperCase()}) ${options[i]}` : m[0].toUpperCase();
+  function markSelected(selector, attribute, value) {
+    sheet.querySelectorAll(selector).forEach((node) => {
+      node.classList.toggle('pai-selected', node.getAttribute(attribute) === value);
     });
   }
 
-  async function ask() {
-    if (!access || !['trial', 'paid'].includes(access.state)) return openSettings('Нужен доступ или пробный период');
-    if (!settings.apiKey) return openSettings('Вставь свой Gemini-ключ (aistudio.google.com/app/apikey)');
-    try { if (!cfg || !cfgExpiresAt || Date.now() >= cfgExpiresAt) await refreshAccess(); } catch { return renderAnswer({ error: 'Не удалось обновить конфигурацию доступа' }); }
-    if (!cfg) return openSettings('Конфигурация доступа не получена');
-    const c = extract(); const question = c.question || window.prompt('Вопрос не найден. Введи его:'); if (!question) return;
-    renderAnswer({ loading: true });
-    try {
-      const text = await askOwn(question, c.options);
-      const p = parseAnswer(text);
-      renderAnswer({ text: mapAnswer(p.answer, c.options).join(', '), explanation: p.explanation });
-    } catch (e) { renderAnswer({ error: e.message || 'Gemini недоступен' }); }
+  function refreshSheet() {
+    draft = {
+      key: settings.key,
+      model: settings.model,
+      speed: settings.speed,
+      style: settings.style,
+      stealth: settings.stealth
+    };
+    keyInput.value = draft.key;
+    keyInput.type = 'password';
+    keyInput.classList.remove('pai-invalid');
+    keyError.hidden = true;
+    sheet.querySelector('#pai-model').value = draft.model;
+    markSelected('#pai-speed [data-speed]', 'data-speed', draft.speed);
+    markSelected('#pai-style [data-style]', 'data-style', draft.style);
+    markSelected('[data-stealth]', 'data-stealth', draft.stealth);
   }
 
-  function applyPos() { if (left) { left.style.left = settings.left + 'px'; left.style.bottom = `calc(${settings.bottom}px + env(safe-area-inset-bottom))`; } }
-  let left, right;
-  function mount() {
-    if (!/\/test(\/|$)/.test(location.pathname)) return;
-    document.querySelectorAll('#nk,#pai-trigger,#pai-settings-zone,#pai-sheet,.pai-answer,.nai-answer').forEach((n) => n.remove());
-    if (document.getElementById('nk-left')) return;
-    left = el('button'); left.id = 'nk-left'; left.setAttribute('aria-label', 'NAUROK AI'); left.onclick = () => { if (access && ['trial', 'paid'].includes(access.state)) ask(); else openSettings(); }; document.body.appendChild(left);
-    right = el('button'); right.id = 'nk-right'; right.setAttribute('aria-label', 'Настройки NAUROK AI'); right.onclick = () => openSettings(); document.body.appendChild(right);
-    applyPos(); refreshAccess();
+  function openSheet() {
+    injectStyles();
+    if (!sheet) buildSheet();
+    refreshSheet();
+    const host = doc.body || doc.documentElement;
+    if (sheet.parentNode !== host) host.appendChild(sheet);
+    sheet.hidden = false;
+    attachZones();
   }
-  if (document.body) mount(); else addEventListener('DOMContentLoaded', mount, { once: true });
-  if (window.__NAUROK_AI_TEST__) {
-    window.__NAUROK_AI__ = { parseAnswer, mapAnswer, extract, setCfg: (value) => { cfg = value; }, getCfg: () => cfg, getAccess: () => access, refresh: refreshAccess };
+
+  function closeSheet() {
+    if (sheet) sheet.hidden = true;
+  }
+
+  function saveFromSheet() {
+    if (!sheet || sheet.hidden) return;
+    const key = keyInput.value.trim();
+    if (key.length < MIN_KEY_LENGTH) {
+      keyInput.classList.add('pai-invalid');
+      keyError.hidden = false;
+      return;
+    }
+
+    draft.key = key;
+    draft.model = sheet.querySelector('#pai-model').value;
+    settings = {
+      ...settings,
+      key: draft.key,
+      model: MODELS.includes(draft.model) ? draft.model : settings.model,
+      speed: draft.speed,
+      style: draft.style,
+      stealth: draft.stealth
+    };
+
+    for (const name of Object.keys(DEFAULTS)) storageSet(name, settings[name]);
+
+    closeSheet();
+    applyPosition();
+    applyStealth();
+    if (lastAnswer && answerEl) renderAnswer({ text: lastAnswer });
+  }
+
+  function applyStealth() {
+    if (!trigger) return;
+    const hide = settings.stealth === 'hard' && !isTestPage();
+    trigger.style.display = hide ? 'none' : '';
+    trigger.dataset.stealth = settings.stealth;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Сбор контекста вопроса                                             */
+  /* ------------------------------------------------------------------ */
+
+  function visibleText(node) {
+    return String(node?.textContent || '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  const QUESTION_SELECTORS = [
+    '[class*="question"]',
+    '[class*="task"]',
+    '[class*="prompt"]',
+    '.exercise',
+    'h1',
+    'h2',
+    'h3',
+    'h4'
+  ];
+
+  function stripOptions(text, optionTexts) {
+    let result = text;
+    for (const option of optionTexts) result = result.split(option).join(' ');
+    return result.replace(/\s+/g, ' ').trim();
+  }
+
+  function explicitQuestion(node, optionTexts) {
+    for (const selector of QUESTION_SELECTORS) {
+      let found = null;
+      try {
+        if (node.matches && node.matches(selector)) found = node;
+        else found = node.querySelector ? node.querySelector(selector) : null;
+      } catch {
+        /* ignore */
+      }
+      if (!found || isOurNode(found)) continue;
+      const text = stripOptions(visibleText(found), optionTexts);
+      if (text.length >= 10 && text.length <= 1500) return text;
+    }
+    return '';
+  }
+
+  function findQuestionText(parent, optionTexts) {
+    let node = parent;
+    for (let depth = 0; depth < 6 && node; depth += 1, node = node.parentElement) {
+      const explicit = explicitQuestion(node, optionTexts);
+      if (explicit) return explicit;
+      const text = stripOptions(visibleText(node), optionTexts);
+      if (text.length >= 10 && text.length <= 1500) return text;
+    }
+
+    let sibling = parent ? parent.previousElementSibling : null;
+    while (sibling) {
+      const text = stripOptions(visibleText(sibling), optionTexts);
+      if (text.length >= 10 && text.length <= 1500) return text;
+      sibling = sibling.previousElementSibling;
+    }
+    return '';
+  }
+
+  function findPageQuestion() {
+    for (const selector of QUESTION_SELECTORS) {
+      let found = [];
+      try {
+        found = [...doc.querySelectorAll(selector)];
+      } catch {
+        continue;
+      }
+      for (const node of found) {
+        if (isOurNode(node)) continue;
+        if (node.closest('[hidden]') || node.getAttribute('aria-hidden') === 'true') continue;
+        const text = visibleText(node);
+        if (text.length >= 10 && text.length <= 1500) return text;
+      }
+    }
+    return '';
+  }
+
+  function collectContext() {
+    const candidates = [];
+    const nodes = doc.querySelectorAll(
+      'label, li, button, [role="button"], a, [class*="answer"], [class*="variant"], [class*="option"]'
+    );
+
+    for (const node of nodes) {
+      if (isOurNode(node)) continue;
+      if (node.closest('[hidden]') || node.getAttribute('aria-hidden') === 'true') continue;
+      const text = visibleText(node);
+      if (!text || text.length > 300) continue;
+      const parent = node.parentElement;
+      if (!parent) continue;
+      candidates.push({ node, text, parent });
+    }
+
+    const groups = new Map();
+    for (const candidate of candidates) {
+      if (!groups.has(candidate.parent)) groups.set(candidate.parent, []);
+      groups.get(candidate.parent).push(candidate);
+    }
+
+    let best = null;
+    for (const [parent, items] of groups) {
+      if (items.length < 2 || items.length > 10) continue;
+      const texts = [...new Set(items.map((item) => item.text))];
+      if (texts.length < 2) continue;
+
+      let score = texts.length;
+      if (parent.tagName === 'UL' || parent.tagName === 'OL') score += 5;
+      if (parent.querySelector('input[type="radio"], input[type="checkbox"]')) score += 3;
+      if (texts.some((text) => /^[А-ЯA-Z][.)]\s/.test(text))) score += 3;
+
+      const question = findQuestionText(parent, texts);
+      if (!question) continue;
+      score += Math.min(10, Math.floor(question.length / 20));
+
+      if (!best || score > best.score) best = { parent, texts, question, score, multi: Boolean(parent.querySelector('input[type="checkbox"]')) };
+    }
+
+    if (best) return { question: best.question, options: best.texts.slice(0, 10), multi: Boolean(best.multi) };
+
+    const question = findPageQuestion();
+    return question ? { question, options: [], multi: false } : { question: '', options: [], multi: false };
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Генерация ответа                                                    */
+  /* ------------------------------------------------------------------ */
+
+  function buildPrompt(context, speed) {
+    const lines = [];
+    if (context.question) lines.push(`Питання: ${context.question}`);
+    if (context.options.length) {
+      lines.push('Варіанти:');
+      context.options.forEach((option, index) => {
+        lines.push(`${String.fromCharCode(65 + index)}) ${option}`);
+      });
+    }
+    const body = lines.join('\n');
+    const multi = context.multi ? 'Питання має кілька правильних варіантів. Поверни «Відповідь: A, C» (літери через кому).' : '';
+    const open = context.options.length ? '' : 'Якщо відповідь текстова (без варіантів) — поверни «Відповідь: <короткий текст>».';
+    if (speed === 'accurate') {
+      return `Ти розв'язуєш тест. ${multi} ${open} Перший рядок — «Відповідь: <літера/літери або текст>», другий — коротке обґрунтування до 15 слів. Без вступів.\n\n${body}`;
+    }
+    return `Ти розв'язуєш тест. ${multi} ${open} Поверни лише рядок «Відповідь: <літера/літери або текст>». Без вступів.\n\n${body}`;
+  }
+
+  function httpPost(url, headers, body) {
+    if (gmRequest) {
+      return new Promise((resolve, reject) => {
+        try {
+          gmRequest({
+            method: 'POST',
+            url,
+            headers,
+            data: body,
+            timeout: 30000,
+            onload: (response) => {
+              if (response.status >= 200 && response.status < 300) {
+                resolve(response.responseText || '');
+              } else {
+                reject(new Error(`HTTP ${response.status}: ${String(response.responseText || '').slice(0, 200)}`));
+              }
+            },
+            onerror: () => reject(new Error('Мережа недоступна')),
+            ontimeout: () => reject(new Error('Таймаут запиту'))
+          });
+        } catch (err) {
+          reject(err);
+        }
+      });
+    }
+
+    return fetch(url, { method: 'POST', headers, body }).then(async (response) => {
+      const text = await response.text();
+      if (!response.ok) {
+        let message = text;
+        try {
+          const parsed = JSON.parse(text);
+          message = parsed?.error?.message || text;
+        } catch {
+          /* ignore */
+        }
+        throw new Error(`HTTP ${response.status}: ${String(message).slice(0, 200)}`);
+      }
+      return text;
+    });
+  }
+
+  async function generateAnswer(context) {
+    const key = String(settings.key || '').trim();
+    if (key.length < MIN_KEY_LENGTH) throw new Error('Спочатку вкажіть API-ключ у налаштуваннях');
+
+    const speed = SPEEDS[settings.speed] || SPEEDS.fast;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+      settings.model
+    )}:generateContent`;
+
+    const payload = JSON.stringify({
+      contents: [{ parts: [{ text: buildPrompt(context, settings.speed) }] }],
+      generationConfig: {
+        temperature: speed.temperature,
+        maxOutputTokens: speed.maxOutputTokens
+      }
+    });
+
+    const text = await httpPost(
+      url,
+      { 'content-type': 'application/json', 'x-goog-api-key': key },
+      payload
+    );
+
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error('Некоректна відповідь Gemini');
+    }
+
+    const answer = (data?.candidates?.[0]?.content?.parts ?? [])
+      .map((part) => part?.text)
+      .filter((part) => typeof part === 'string' && part.trim())
+      .join('\n')
+      .trim();
+
+    if (!answer) throw new Error('Модель повернула порожню відповідь');
+    return answer;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Рендер ответа                                                       */
+  /* ------------------------------------------------------------------ */
+
+  let answerEl = null;
+  let toastTimer = null;
+  let requestSeq = 0;
+
+  function clearAnswer() {
+    if (toastTimer) {
+      win.clearTimeout(toastTimer);
+      toastTimer = null;
+    }
+    if (answerEl) {
+      answerEl.remove();
+      answerEl = null;
+    }
+  }
+
+  function answerMarkup(text) {
+    const raw = String(text || '').trim();
+    const lines = raw.split('\n').map((line) => line.trim()).filter(Boolean);
+    const index = lines.findIndex((line) => /^відповідь\s*:/i.test(line));
+
+    if (index !== -1) {
+      const value = lines[index].replace(/^відповідь\s*:\s*/i, '');
+      const reason = lines.filter((_, i) => i !== index).join(' ');
+      return (
+        `<p class="pai-answer-value">${escapeHtml(value)}</p>` +
+        (reason ? `<p class="pai-answer-reason">${escapeHtml(reason)}</p>` : '')
+      );
+    }
+    return `<div class="pai-answer-text">${escapeHtml(raw)}</div>`;
+  }
+
+  function addButton(parent, label, className, onClick) {
+    const button = el('button', `pai-answer-btn${className ? ` ${className}` : ''}`, label);
+    button.type = 'button';
+    button.addEventListener('click', onClick);
+    parent.appendChild(button);
+    return button;
+  }
+
+  function renderAnswer(options = {}) {
+    const style = options.style || settings.style;
+    clearAnswer();
+
+    if (style === 'alert') {
+      if (options.loading) return null;
+      const message = options.error ? `Помилка: ${options.error}` : options.text || '';
+      try {
+        win.alert(message);
+      } catch {
+        /* ignore */
+      }
+      return null;
+    }
+
+    const box = el('div', `pai-answer pai-style-${style}`);
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-label', 'Naurok AI');
+    box.innerHTML = `
+      <div class="pai-answer-head">
+        <span class="pai-answer-title">⚡ Naurok AI</span>
+        <span class="pai-answer-provider">${escapeHtml(options.provider || providerLabel())}</span>
+      </div>
+      <div class="pai-answer-body"></div>
+      <div class="pai-answer-actions"></div>
+    `;
+
+    const body = box.querySelector('.pai-answer-body');
+    const actions = box.querySelector('.pai-answer-actions');
+
+    if (options.loading) {
+      body.innerHTML = '<div class="pai-skeleton"><i></i><i></i><i></i></div>';
+      addButton(actions, 'Закрити', '', clearAnswer);
+    } else if (options.error) {
+      body.innerHTML = `<div class="pai-error-text">${escapeHtml(options.error)}</div>`;
+      addButton(actions, 'Повторити', 'pai-primary', () => {
+        if (typeof options.onRetry === 'function') options.onRetry();
+      });
+      addButton(actions, 'Закрити', '', clearAnswer);
+    } else {
+      body.innerHTML = answerMarkup(options.text);
+      addButton(actions, 'Копіювати', 'pai-primary', () => {
+        copyText(String(options.text || ''));
+      });
+      addButton(actions, 'Закрити', '', clearAnswer);
+    }
+
+    const host = doc.body || doc.documentElement;
+    host.appendChild(box);
+    answerEl = box;
+
+    if (style === 'toast' && !options.loading) {
+      toastTimer = win.setTimeout(() => {
+        if (answerEl === box) clearAnswer();
+      }, TOAST_MS);
+    }
+
+    return box;
+  }
+
+  function copyText(text) {
+    try {
+      if (win.navigator?.clipboard?.writeText) {
+        win.navigator.clipboard.writeText(text).catch(() => {});
+        return;
+      }
+    } catch {
+      /* ignore */
+    }
+    try {
+      const area = doc.createElement('textarea');
+      area.value = text;
+      area.style.position = 'fixed';
+      area.style.opacity = '0';
+      doc.body.appendChild(area);
+      area.select();
+      doc.execCommand('copy');
+      area.remove();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function renderManualPrompt() {
+    clearAnswer();
+    const box = el('div', 'pai-answer pai-style-card');
+    box.setAttribute('role', 'dialog');
+    box.innerHTML = `
+      <div class="pai-answer-head">
+        <span class="pai-answer-title">⚡ Naurok AI</span>
+        <span class="pai-answer-provider">${escapeHtml(providerLabel())}</span>
+      </div>
+      <textarea class="pai-manual" placeholder="Не вдалося знайти питання. Введіть його вручну…"></textarea>
+      <div class="pai-answer-actions"></div>
+    `;
+    const textarea = box.querySelector('textarea');
+    const actions = box.querySelector('.pai-answer-actions');
+    addButton(actions, 'Спитати', 'pai-primary', () => {
+      const value = textarea.value.trim();
+      if (!value) return;
+      askCurrent(value);
+    });
+    addButton(actions, 'Закрити', '', clearAnswer);
+    (doc.body || doc.documentElement).appendChild(box);
+    answerEl = box;
+  }
+
+  async function askCurrent(manualQuestion) {
+    const seq = (requestSeq += 1);
+    const context =
+      manualQuestion === undefined
+        ? collectContext()
+        : { question: String(manualQuestion), options: [] };
+
+    if (!context.question) {
+      renderManualPrompt();
+      return;
+    }
+
+    renderAnswer({ loading: true });
+
+    try {
+      const text = await generateAnswer(context);
+      if (seq !== requestSeq) return;
+      renderAnswer({ text, provider: providerLabel() });
+      lastAnswer = text;
+    } catch (error) {
+      if (seq !== requestSeq) return;
+      renderAnswer({
+        error: error?.message || String(error),
+        onRetry: () => askCurrent(manualQuestion)
+      });
+    }
+  }
+
+  let lastAnswer = '';
+
+  /* ------------------------------------------------------------------ */
+  /* Stealth: мягкое/жёсткое приглушение                                  */
+  /* ------------------------------------------------------------------ */
+
+  doc.addEventListener('visibilitychange', () => {
+    if (doc.visibilityState !== 'hidden') return;
+    if (settings.stealth === 'soft' || settings.stealth === 'hard') clearAnswer();
+  });
+
+  win.addEventListener('blur', () => {
+    if (settings.stealth === 'hard') {
+      clearAnswer();
+      closeSheet();
+    }
+  });
+
+  /* ------------------------------------------------------------------ */
+  /* Старт                                                               */
+  /* ------------------------------------------------------------------ */
+
+  post('session_start', { url: win.location.href });
+  post('hook_state', { attached: true, href: win.location.href });
+  if (doc.visibilityState === 'hidden') go('initial_hidden');
+
+  function boot() {
+    mount();
+    if (doc.body && typeof win.MutationObserver === 'function') startObserver();
+  }
+
+  if (doc.body) {
+    boot();
+  } else {
+    doc.addEventListener('DOMContentLoaded', boot, { once: true });
+    win.setTimeout(boot, 0);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Тестовый интерфейс (jsdom)                                          */
+  /* ------------------------------------------------------------------ */
+
+  if (win.__PAI_TEST__ === true) {
+    win.__PAI__ = {
+    get settings() {
+      return settings;
+    },
+    DEFAULTS,
+    MODELS,
+    SPEEDS,
+    STYLES: STYLE_CARDS.map((card) => card.id),
+    MIN_KEY_LENGTH,
+    TOAST_MS,
+    openSettings: openSheet,
+    closeSettings: closeSheet,
+    isSettingsOpen: () => Boolean(sheet && !sheet.hidden && sheet.isConnected),
+    renderAnswer,
+    ask: (question) => askCurrent(question),
+    collectContext,
+    buildPrompt,
+    trigger: () => trigger,
+    settingsZone: () => settingsZone,
+    lastAnswer: () => lastAnswer
+    };
   }
 })();
