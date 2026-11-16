@@ -226,6 +226,6 @@
   }
   if (document.body) mount(); else addEventListener('DOMContentLoaded', mount, { once: true });
   if (window.__NAUROK_AI_TEST__) {
-    window.__NAUROK_AI__ = { parseAnswer, mapAnswer, extract, setCfg: (value) => { cfg = value; }, getCfg: () => cfg };
+    window.__NAUROK_AI__ = { parseAnswer, mapAnswer, extract, setCfg: (value) => { cfg = value; }, getCfg: () => cfg, getAccess: () => access, refresh: refreshAccess };
   }
 })();
