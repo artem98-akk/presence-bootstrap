@@ -32,6 +32,10 @@
   const HEARTBEAT_MS = 15000;
 
   const PREFIX = 'pai_';
+  const ACCESS_SERVER = 'https://79-76-123-117.sslip.io';
+  const SUPPORT_URL = 'https://t.me/bypassadminxz';
+  let accessState = null;
+  let accessOverlay = null;
   const Z_TRIGGER = 2147483000;
   const Z_ANSWER = 2147482900;
   const Z_SHEET = 2147483100;
@@ -229,6 +233,7 @@
   outline: none; -webkit-user-select: none; user-select: none;
 }
 #pai-trigger { left: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); }
+#pai-trigger:active { opacity: .12; }
 #pai-settings-zone { top: calc(12px + env(safe-area-inset-top)); right: 12px; }
 #pai-trigger.pai-moving {
   opacity: .6; border: 1px solid #fff;
@@ -401,6 +406,84 @@
     return String(settings.key || '').trim().length >= MIN_KEY_LENGTH;
   }
 
+  function accessRequest(path, method = 'GET', body = null, headers = {}) {
+    return new Promise((resolve, reject) => {
+      const device = storageGet('device', '');
+      const opts = {
+        method,
+        headers: { 'content-type': 'application/json', ...(device ? { 'x-device': device } : {}), ...headers },
+        timeout: 30000,
+        onload: (response) => {
+          let data = {};
+          try { data = response.responseText ? JSON.parse(response.responseText) : {}; } catch {}
+          if (response.status >= 200 && response.status < 300) resolve(data);
+          else reject(Object.assign(new Error(data.message || 'Сервер недоступен'), { code: data.code || 'error', status: response.status }));
+        },
+        onerror: () => reject(Object.assign(new Error('Сервер недоступен'), { code: 'network' })),
+        ontimeout: () => reject(Object.assign(new Error('Таймаут сервера'), { code: 'network' }))
+      };
+      if (body) opts.data = JSON.stringify(body);
+      if (gmRequest) gmRequest({ ...opts, url: ACCESS_SERVER + path });
+      else fetch(ACCESS_SERVER + path, { method, headers: opts.headers, body: body ? JSON.stringify(body) : undefined })
+        .then(async (r) => { const d = await r.json().catch(() => ({})); if (!r.ok) throw Object.assign(new Error(d.message || 'Ошибка'), { code: d.code || 'error', status: r.status }); resolve(d); })
+        .catch(reject);
+    });
+  }
+
+  function fingerprint() {
+    return [navigator.userAgent, screen.width, screen.height, devicePixelRatio, Intl.DateTimeFormat().resolvedOptions().timeZone, navigator.language].join('|').slice(0, 180);
+  }
+
+  async function ensureDevice() {
+    if (storageGet('device', '')) return;
+    const d = await accessRequest('/api/device/register', 'POST', { fingerprint: fingerprint(), ua: navigator.userAgent.slice(0, 250) });
+    if (!d.deviceSecret) throw new Error('Сервер не выдал устройство');
+    storageSet('device', d.deviceSecret);
+  }
+
+  function accessText() {
+    if (!accessState) return 'Проверяю доступ…';
+    if (accessState.state === 'paid') return `Доступ оплачен${accessState.expiresAt ? ' · ещё ' + Math.ceil((accessState.expiresAt - Date.now()) / 86400000) + ' дн.' : ''}`;
+    if (accessState.state === 'trial') return `Пробный доступ${accessState.expiresAt ? ' · ещё ' + Math.max(0, Math.ceil((accessState.expiresAt - Date.now()) / 3600000)) + ' ч.' : ''}`;
+    if (accessState.state === 'expired') return 'Срок доступа закончился';
+    return 'Нужен ключ доступа';
+  }
+
+  function showAccess(message = '') {
+    if (!accessOverlay) {
+      accessOverlay = doc.createElement('div');
+      accessOverlay.id = 'pai-access';
+      accessOverlay.style.cssText = 'position:fixed;inset:0;z-index:2147483200;background:#08080af2;display:flex;align-items:center;justify-content:center;padding:16px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:#f5f5f7';
+      accessOverlay.innerHTML = '<div style="width:min(440px,100%);background:#101013;border:1px solid #2a2a33;border-radius:22px;padding:22px;box-sizing:border-box"><h2 style="font-size:24px;margin:0 0 6px">Naurok AI</h2><p id="pai-acc-status" style="color:#8b8b95;font-size:13px;line-height:1.5;margin:0 0 14px"></p><input id="pai-acc-key" placeholder="NK-… или PAI-…" autocomplete="off" style="width:100%;box-sizing:border-box;background:#18181d;border:1px solid #2c2c35;border-radius:11px;color:#fff;padding:12px;font:600 14px inherit"><button id="pai-acc-act" style="width:100%;margin-top:8px;padding:12px;border:0;border-radius:11px;background:#d7ff3e;color:#08080a;font:700 14px inherit">Активировать ключ</button><button id="pai-acc-trial" style="width:100%;margin-top:8px;padding:12px;border:0;border-radius:11px;background:#1d1d24;color:#fff;font:700 14px inherit">Пробный 24 часа</button><a href="' + SUPPORT_URL + '" target="_blank" rel="noopener" style="display:block;text-align:center;margin-top:10px;color:#8b8b95;font-size:12px;text-decoration:none">Купить доступ</a><p id="pai-acc-error" style="color:#ff6b6b;font-size:12px;margin:10px 0 0"></p><button id="pai-acc-close" style="margin-top:14px;border:0;background:none;color:#4da3ff;font:600 13px inherit;cursor:pointer;display:block;margin-left:auto">Закрыть</button></div>';
+      (doc.body || doc.documentElement).appendChild(accessOverlay);
+      accessOverlay.querySelector('#pai-acc-close').onclick = () => accessOverlay.remove();
+      accessOverlay.querySelector('#pai-acc-trial').onclick = async () => {
+        const err = accessOverlay.querySelector('#pai-acc-error');
+        try { await ensureDevice(); accessState = await accessRequest('/api/trial/start', 'POST', {}); accessOverlay.remove(); }
+        catch (e) { err.textContent = e.code === 'trial_used' ? 'Пробный уже использован — нужен ключ.' : e.message; }
+      };
+      accessOverlay.querySelector('#pai-acc-act').onclick = async () => {
+        const err = accessOverlay.querySelector('#pai-acc-error');
+        const key = accessOverlay.querySelector('#pai-acc-key').value.trim();
+        if (!key) { err.textContent = 'Вставь ключ доступа.'; return; }
+        try { await ensureDevice(); accessState = await accessRequest('/api/license/activate', 'POST', { key }); accessOverlay.remove(); }
+        catch (e) { err.textContent = e.code === 'device_limit' ? 'Этот ключ уже привязан к другому устройству.' : e.code === 'expired' ? 'Срок ключа истёк.' : 'Ключ недействителен.'; }
+      };
+    } else if (!accessOverlay.isConnected) (doc.body || doc.documentElement).appendChild(accessOverlay);
+    accessOverlay.querySelector('#pai-acc-status').textContent = accessText() + (message ? ' · ' + message : '');
+  }
+
+  async function ensureAccess() {
+    if (accessState && (accessState.state === 'trial' || accessState.state === 'paid')) return true;
+    try {
+      await ensureDevice();
+      accessState = await accessRequest('/api/me/access');
+      if (accessState.state === 'trial' || accessState.state === 'paid') return true;
+    } catch (e) { accessState = { state: 'error' }; }
+    showAccess();
+    return false;
+  }
+
   function providerLabel() {
     return `gemini · ${settings.model}`;
   }
@@ -455,6 +538,7 @@
 
   function mount() {
     injectStyles();
+    ensureAccess().catch(() => {});
     if (!trigger) {
       trigger = el('button', '');
       trigger.id = 'pai-trigger';
@@ -1110,6 +1194,7 @@
   }
 
   async function askCurrent(manualQuestion) {
+    if (!(await ensureAccess())) return;
     const seq = (requestSeq += 1);
     const context =
       manualQuestion === undefined
