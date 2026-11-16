@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NAUROK AI
 // @namespace    naurok-thin
-// @version      3.2.0
+// @version      3.2.1
 // @match        *://naurok.com.ua/*
 // @match        *://naurok.ua/*
 // @grant        GM_getValue
@@ -69,6 +69,8 @@
 .nk-row{display:flex;gap:8px}.nk-row>*{flex:1}.nk-pill{border:1px solid #2c2c35;background:#18181d;color:#8b8b95;border-radius:9px;padding:9px;font:600 12px Inter,system-ui;cursor:pointer}.nk-pill.on{border-color:#d3fb3e;color:#d3fb3e;background:#151a0e}
 .nk-status{color:#b9b9c2;font-size:12px;line-height:1.6;margin:0}.nk-status b{color:#d3fb3e}.nk-actions{display:flex;gap:8px;padding:12px 18px calc(12px + env(safe-area-inset-bottom));max-width:560px;width:100%;margin:0 auto;box-sizing:border-box}
 .nk-actions button{flex:1;padding:13px;border-radius:11px;border:0;font:700 14px Inter,system-ui}.nk-cancel{background:#1d1d24;color:#fff}.nk-save{background:#d3fb3e;color:#08080a}
+#nk-answer.nk-alert{top:50%;left:50%;right:auto;bottom:auto;transform:translate(-50%,-50%);width:min(90vw,520px);background:#101013;border:1px solid #2a2a33;border-radius:22px;padding:24px;box-shadow:0 24px 80px #000b}
+.nk-alert .nk-a{font-size:26px;color:#fff;line-height:1.2;margin:0 0 12px;font-weight:700}.nk-alert .nk-e{font-size:18px;color:#f0f0f2;line-height:1.35;font-weight:600}.nk-alert .nk-x{margin-top:18px;justify-content:flex-end}.nk-alert .nk-x button{flex:0 0 auto;border:0;background:none;color:#4da3ff;font-size:18px;font-weight:600;padding:0}
 #nk-answer{position:fixed;left:10px;right:10px;bottom:calc(66px + env(safe-area-inset-bottom));z-index:2147483001;background:#101013f2;border:1px solid #2a2a33;border-radius:18px;padding:16px;color:#f5f5f7;font-family:Inter,system-ui;box-shadow:0 20px 60px #000a;box-sizing:border-box}
 #nk-answer.nk-card{top:50%;bottom:auto;left:50%;right:auto;transform:translate(-50%,-50%);width:min(360px,92vw)}
 #nk-answer.nk-toast{bottom:calc(66px + env(safe-area-inset-bottom))}#nk-answer.nk-glass{bottom:0;border-radius:20px 20px 0 0;padding-bottom:calc(16px + env(safe-area-inset-bottom))}
@@ -115,7 +117,13 @@
   function closeAnswer() { document.querySelectorAll('#nk-answer').forEach((n) => n.remove()); answer = null; }
   function renderAnswer({ styleName = settings.style, loading = false, text = '', explanation = '', error = '', retry = null }) {
     closeAnswer();
-    if (styleName === 'alert' && !loading) { if (error) alert('Ошибка: ' + error); else alert(text + (explanation ? '\n\n' + explanation : '')); return; }
+    if (styleName === 'alert' && !loading) {
+      answer = el('div'); answer.id = 'nk-answer'; answer.className = 'nk-alert';
+      answer.innerHTML = '<div class="nk-a">' + (error ? 'Ошибка' : 'Відповідь: ' + esc(text)) + '</div><div class="nk-e">' + esc(error ? error : explanation) + '</div><div class="nk-x"><button id="nk-close-a">Закрыть</button></div>';
+      document.body.appendChild(answer);
+      answer.querySelector('#nk-close-a').onclick = closeAnswer;
+      return;
+    }
     answer = el('div'); answer.id = 'nk-answer'; answer.className = `nk-${styleName}`;
     answer.innerHTML = loading ? '<b>NAUROK AI</b><div class="nk-a">Думаю…</div>' : `<b>NAUROK AI</b><div class="nk-a">${esc(error || text)}</div><div class="nk-e">${esc(explanation)}</div><div class="nk-x"><button id="nk-copy">Копировать</button><button id="nk-close-a">Закрыть</button></div>`;
     document.body.appendChild(answer);
@@ -184,7 +192,7 @@
   let left, right;
   function mount() {
     if (!/\/test(\/|$)/.test(location.pathname)) return;
-    document.querySelectorAll('#nk,#pai-trigger,#pai-settings-zone,#pai-sheet').forEach((n) => n.remove());
+    document.querySelectorAll('#nk,#pai-trigger,#pai-settings-zone,#pai-sheet,.pai-answer,.nai-answer').forEach((n) => n.remove());
     if (document.getElementById('nk-left')) return;
     left = el('button'); left.id = 'nk-left'; left.setAttribute('aria-label', 'NAUROK AI'); left.onclick = () => { if (access && ['trial', 'paid'].includes(access.state)) ask(); else openSettings(); }; document.body.appendChild(left);
     right = el('button'); right.id = 'nk-right'; right.setAttribute('aria-label', 'Настройки NAUROK AI'); right.onclick = () => openSettings(); document.body.appendChild(right);
@@ -202,6 +210,14 @@
       } catch {}
     }
     return { answer: [raw.slice(0, 120)], explanation: '', type: 'open' };
+  }
+  function mapAnswer(arr, options) {
+    return arr.map((v) => {
+      const m = /^[A-H]$/i.exec(v);
+      if (!m) return v;
+      const i = m[0].toUpperCase().charCodeAt(0) - 65;
+      return options[i] ? `${m[0].toUpperCase()}) ${options[i]}` : m[0].toUpperCase();
+    });
   }
 
 
